@@ -56,7 +56,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 1
 
     # 骨架下限过了，再看评估有效性：分母太小的话指标会剧烈跳动，
-    # 但这不是"数据集坏了"，所以只告警不失败 —— 骨架阶段就是 12 条。
+    # 但这不是"数据集坏了"，所以只告警不失败 —— 骨架阶段只有 12 条，
+    # 现已扩到 40 条（10 陷阱 + 10 无答案），正常情况下不再出现这两条告警。
     trap_n = counts.get("cross_year_trap", 0)
     noans_n = counts.get("no_answer", 0)
     need_trap_v = int(limits.get("validity_trap_denominator", 10))

@@ -37,7 +37,7 @@ python -m runner.cli run --fail-under 0.15
 
 ```
 eval/
-├── dataset/queries.jsonl     # 12 条问句：5 现行 / 4 跨年度陷阱 / 2 历史 / 1 无答案
+├── dataset/queries.jsonl     # 40 条问句：15 现行 / 10 跨年度陷阱 / 5 历史 / 10 无答案
 ├── runner/
 │   ├── metrics.py            # 全部指标口径。纯标准库，CI 每次跑
 │   ├── dataset.py            # 读 + 严格校验 queries.jsonl
@@ -46,7 +46,7 @@ eval/
 │   ├── db.py                 # 写 eval_runs / eval_results（可选，缺 psycopg 不报错）
 │   ├── ragas_adapter.py      # 生成质量指标（可选，不进 CI）
 │   └── cli.py                # 三个子命令：check / run / baseline
-└── tests/                    # 34 例：指标口径、数据集校验、CLI 冒烟
+└── tests/                    # 56 例：指标口径、数据集校验、CLI 冒烟
 ```
 
 ## 指标口径（改之前必须读）
@@ -113,8 +113,9 @@ eval/
 - `query_id` 不能重复
 
 **评估有效性（不足只告警，不判失败）**：陷阱题与无答案题各需 **≥10 条**（`validity_*`），
-否则本轮指标不具统计意义。骨架阶段是 4 条陷阱 + 1 条无答案，所以 `check` 会打两条 `!` 告警 ——
-这是**故意的**，提醒 E 在第 1 周把评估集扩到 40 条（10 条无答案 + 10 条陷阱）。
+否则本轮指标不具统计意义。骨架阶段只有 4 条陷阱 + 1 条无答案，`check` 会打两条 `!` 告警；
+**现已扩到 40 条（10 条陷阱 + 10 条无答案），`check` 无告警**。若日后从数据集里删题导致
+任一维度跌破 10，告警会重新出现 —— 那时本轮的 `stale_recall_rate` / `refusal_rate` 就不能写进汇报。
 
 ## ragas 是可选的
 
