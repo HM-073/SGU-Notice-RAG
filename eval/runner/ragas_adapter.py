@@ -57,6 +57,92 @@ def compute_ragas(
     }
 
 
+def compute_ragas_repeated(
+    samples: list[dict[str, Any]],
+    *,
+    llm_model: str | None = None,
+    embedding_model: str | None = None,
+    repeat: int = 1,
+) -> list[dict[str, float | None]]:
+    """同一份样本重复跑 N 次，用于量化 judge 的**结果波动**。
+
+    为什么必须重复：RAGAS 的 faithfulness 由 LLM judge 判定，同一答案两次跑
+    差 0.05 是常态。只跑一次就把 0.87 写进汇报，等于把噪声当成事实。
+    本项目的规矩是：**spread > 0.05 的那一轮结果不得用于验收**（见 runbook）。
+    """
+    times = max(1, int(repeat))
+    return [
+        compute_ragas(samples, llm_model=llm_model, embedding_model=embedding_model)
+        for _ in range(times)
+    ]
+
+
+def summarize_runs(runs: list[dict[str, float | None]]) -> dict[str, dict[str, float | None]]:
+    """把 N 次结果压成 mean / min / max / spread。
+
+    spread = max - min，直接对应"结果波动多大"。不要用标准差：N=3 时标准差
+    会给出一个看起来很专业但毫无意义的数字。
+    """
+    keys = sorted({k for run in runs for k in run})
+    out: dict[str, dict[str, float | None]] = {}
+    for key in keys:
+        values = [run[key] for run in runs if isinstance(run.get(key), int | float)]
+        if not values:
+            out[key] = {"mean": None, "min": None, "max": None, "spread": None}
+            continue
+        out[key] = {
+            "mean": round(sum(values) / len(values), 4),
+            "min": round(min(values), 4),
+            "max": round(max(values), 4),
+            "spread": round(max(values) - min(values), 4),
+        }
+    return out
+
+
+def build_run_record(
+    *,
+    report_name: str,
+    created_at: str,
+    llm_model: str | None,
+    embedding_model: str | None,
+    sample_count: int,
+    repeat: int,
+    duration_ms: int,
+    runs: list[dict[str, float | None]],
+    summary: dict[str, dict[str, float | None]],
+) -> dict[str, Any]:
+    """RAGAS 跑批的元数据侧车（`<run_id>.ragas.json`）。
+
+    刻意不塞进 `run-*.json`：那份文件的键必须与 `/api/v1/eval/summary` 的 data
+    段逐字一致，多一个键 D 的契约测试就会红。生成质量指标是"本地取证"，
+    单独存档，D 的看板只读 metrics 里的数值。
+    """
+    return {
+        "report": report_name,
+        "created_at": created_at,
+        "judge": {"llm": llm_model, "embedding": embedding_model},
+        "sample_count": sample_count,
+        "repeat": repeat,
+        "duration_ms": duration_ms,
+        "runs": runs,
+        "summary": summary,
+        "verdict": _verdict_text(summary),
+    }
+
+
+def _verdict_text(summary: dict[str, dict[str, float | None]]) -> str:
+    spreads = [s["spread"] for s in summary.values() if isinstance(s.get("spread"), int | float)]
+    if not spreads:
+        return "无有效分数：judge 全部失败或样本为空，本轮结果不得引用"
+    worst = max(spreads)
+    if worst > 0.05:
+        return (
+            f"波动过大（spread={worst:.4f} > 0.05）：judge 不稳定或温度过高，"
+            "本轮结果不得用于验收，请固定温度重跑"
+        )
+    return f"波动可接受（spread={worst:.4f} ≤ 0.05）"
+
+
 def _mean(series: Any) -> float | None:
     if series is None:
         return None

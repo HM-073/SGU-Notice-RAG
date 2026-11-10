@@ -44,9 +44,10 @@ eval/
 │   ├── runner.py             # 走 HTTP 打被测系统，收集观测
 │   ├── report.py             # 出 JSON / Markdown 两份报告
 │   ├── db.py                 # 写 eval_runs / eval_results（可选，缺 psycopg 不报错）
-│   ├── ragas_adapter.py      # 生成质量指标（可选，不进 CI）
-│   └── cli.py                # 三个子命令：check / run / baseline
-└── tests/                    # 56 例：指标口径、数据集校验、CLI 冒烟
+│   ├── ragas_adapter.py      # 生成质量指标（可选，不进 CI）+ 重复跑/波动统计
+│   └── cli.py                # 四个子命令：check / run / baseline / ragas
+├── docs/ragas-runbook.md     # RAGAS 取证手册：judge 选型、成本、波动判定、跑批记录
+└── tests/                    # 71 例：指标口径、数据集校验、CLI 冒烟、RAGAS 适配层
 ```
 
 ## 指标口径（改之前必须读）
@@ -121,10 +122,17 @@ eval/
 
 ```bash
 pip install -e ".[ragas]"
-python -m runner.cli ragas --report report/run-xxx.json --llm <model>
+# 小样本试跑（确认 judge 通、key 有效）
+python -m runner.cli ragas --report report/run-xxx.json --llm deepseek-chat --limit 10
+# 正式取证：同一样本跑 3 次，看 spread
+python -m runner.cli ragas --report report/run-xxx.json --llm deepseek-chat --repeat 3
 ```
 
-没装就报 `RagasUnavailable`，不影响任何其他命令。
+没装就报 `RagasUnavailable`（exit 3），不影响任何其他命令。
+
+跑完除了回填 `metrics`，还会在旁边落一份 `<run_id>.ragas.json`：judge 模型、样本数、
+每轮原始分数、mean/min/max/**spread**、以及 `verdict`。**spread > 0.05 的那一轮结果
+不得用于验收。** 完整操作、judge 选型与成本估算见 [`docs/ragas-runbook.md`](docs/ragas-runbook.md)。
 
 ## 三条硬规矩
 

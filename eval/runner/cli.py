@@ -196,7 +196,15 @@ def _baseline_outcomes() -> list[metrics_mod.QueryOutcome]:
 
 
 def cmd_ragas(args: argparse.Namespace) -> int:
-    """回填生成质量指标到已有报告。需要装了 ragas 且能连到 judge。"""
+    """回填生成质量指标到已有报告。需要装了 ragas 且能连到 judge。
+
+    可复现的做法（详见 eval/docs/ragas-runbook.md）：
+      - `--repeat 3` 同一份样本跑三遍，看 spread 而不是单次值；
+      - `--limit 10` 先小样本试跑，确认 judge 通再全量；
+      - 每次都落一份 `<run_id>.ragas.json` 侧车，记录 judge 模型与每轮分数。
+    """
+    import time
+
     from . import ragas_adapter
 
     path = Path(args.report)
@@ -215,28 +223,67 @@ def cmd_ragas(args: argparse.Namespace) -> int:
         for s in raw
         if s.get("answer")
     ]
+    if args.limit is not None:
+        samples = samples[: max(0, args.limit)]
+    if not samples:
+        print("! 报告里没有可用答案（全部拒答或 .samples.json 缺失），无可评估样本", file=sys.stderr)
+        return 1
 
+    started = time.monotonic()
     try:
-        scores = ragas_adapter.compute_ragas(
-            samples, llm_model=args.llm, embedding_model=args.embedding
+        runs = ragas_adapter.compute_ragas_repeated(
+            samples,
+            llm_model=args.llm,
+            embedding_model=args.embedding,
+            repeat=args.repeat,
         )
     except ragas_adapter.RagasUnavailable as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 3
+    duration_ms = int((time.monotonic() - started) * 1000)
 
+    stats = ragas_adapter.summarize_runs(runs)
     metrics = summary.setdefault("metrics", {})
     changed = False
-    for key, value in scores.items():
-        if value is not None:
-            metrics[key] = value
+    for key, stat in stats.items():
+        if stat["mean"] is not None:
+            metrics[key] = stat["mean"]
             changed = True
     if not changed:
         print("! 没有算出任何指标（样本为空或 judge 全失败），报告未改动", file=sys.stderr)
         return 1
 
+    record = ragas_adapter.build_run_record(
+        report_name=path.name,
+        created_at=report_mod.now_iso(),
+        llm_model=args.llm,
+        embedding_model=args.embedding,
+        sample_count=len(samples),
+        repeat=max(1, args.repeat),
+        duration_ms=duration_ms,
+        runs=runs,
+        summary=stats,
+    )
+    meta_path = path.with_name(path.stem + ".ragas.json")
+    meta_path.write_text(
+        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"✓ 已回填 {scores} → {path}")
+    for key, stat in stats.items():
+        print(
+            f"  {key:18} mean={_fmt_stat(stat['mean'])} "
+            f"min={_fmt_stat(stat['min'])} max={_fmt_stat(stat['max'])} "
+            f"spread={_fmt_stat(stat['spread'])}"
+        )
+    print(f"✓ 已回填 {len(samples)} 条样本 × {max(1, args.repeat)} 次 → {path}")
+    print(f"✓ 取证记录 → {meta_path}")
+    print(f"  {record['verdict']}")
     return 0
+
+
+def _fmt_stat(value: float | None) -> str:
+    return "—" if value is None else f"{value:.4f}"
 
 
 def _read_previous(report_dir: Path) -> dict | None:
@@ -275,8 +322,12 @@ def main(argv: list[str] | None = None) -> int:
 
     g = sub.add_parser("ragas", help="回填生成质量指标（可选，需装 ragas）")
     g.add_argument("--report", required=True)
-    g.add_argument("--llm", default=None)
-    g.add_argument("--embedding", default=None)
+    g.add_argument("--llm", default=None, help="judge 模型名，如 deepseek-chat / qwen-plus")
+    g.add_argument("--embedding", default=None, help="answer_relevancy 用的嵌入模型")
+    g.add_argument(
+        "--repeat", type=int, default=1, help="同一份样本重复跑几次（≥3 才能看出波动）"
+    )
+    g.add_argument("--limit", type=int, default=None, help="只评估前 N 条（先小样本试跑省成本）")
     g.set_defaults(func=cmd_ragas)
 
     b = sub.add_parser("baseline", help="用构造数据验证指标代码")
